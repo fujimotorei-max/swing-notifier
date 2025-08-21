@@ -1,22 +1,32 @@
 name: swing-notifier
 
+concurrency:
+  group: swing-notifier
+  cancel-in-progress: true
+
 on:
   schedule:
-    - cron: "*/30 * * * *"   # 30分ごと（UTC）。JST(+9)でも常に30分おきに動く
-  workflow_dispatch: {}       # 手動実行ボタンも出す
+    # 午前（JST 09:00–11:30）= UTC 00:00–02:30
+    - cron: "0,30 0-2 * * 1-5"
+    # 午後（JST 12:30 ちょうど）= UTC 03:30
+    - cron: "30 3 * * 1-5"
+    # 午後（JST 13:00–14:30）= UTC 04:00–05:30
+    - cron: "0,30 4-5 * * 1-5"
+    # 引け（JST 15:00）= UTC 06:00
+    - cron: "0 6 * * 1-5"
+  workflow_dispatch: {}
 
 permissions:
-  contents: write             # ステート用ブランチにpushするのでwriteが必要
+  contents: write
 
 jobs:
   run:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0      # ブランチ操作するのでフル履歴
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -26,31 +36,27 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # --- ステートの復元（stateブランチから trade_state.json を取り出す） ---
+      # stateブランチから trade_state.json を復元
       - name: Restore state file if exists
         shell: bash
         run: |
           set -e
           if git ls-remote --exit-code origin state >/dev/null 2>&1; then
-            echo "state branch exists. Restoring trade_state.json ..."
             git fetch origin state
-            # stateブランチに trade_state.json があるなら取り出す。無ければ空JSONを作る
             if git show origin/state:trade_state.json >/dev/null 2>&1; then
               git show origin/state:trade_state.json > trade_state.json
             else
               echo "{}" > trade_state.json
             fi
           else
-            echo "state branch not found. Create empty state."
             echo "{}" > trade_state.json
-          fi
 
       - name: Run notifier
         env:
           CHANNEL_ACCESS_TOKEN: ${{ secrets.CHANNEL_ACCESS_TOKEN }}
         run: python swing_notifier.py
 
-      # --- ステートの保存（trade_state.json を stateブランチにcommit/push） ---
+      # trade_state.json を state ブランチに保存
       - name: Save state back to branch
         shell: bash
         run: |
@@ -58,11 +64,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # stateブランチを作業ツリーとして追加
           if git ls-remote --exit-code origin state >/dev/null 2>&1; then
             git worktree add ../state-worktree origin/state
           else
-            # stateブランチが無い場合はmainから作る（中身はstate専用にしてOK）
             git worktree add -b state ../state-worktree HEAD
             pushd ../state-worktree
             rm -rf ./*
@@ -71,7 +75,6 @@ jobs:
             popd
           fi
 
-          # trade_state.json を stateワークツリーへコピーして差分があればcommit/push
           cp trade_state.json ../state-worktree/trade_state.json
           pushd ../state-worktree
           if git diff --quiet -- trade_state.json; then

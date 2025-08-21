@@ -73,7 +73,8 @@ def run():
             print("データなし")
             continue
 
-        price = df["Close"].iloc[-1]
+        # ✅ floatに変換して常にスカラー値にする
+        price = float(df["Close"].iloc[-1])
         print("現在値:", price)
 
         tstate = state.get(code, {"status": "NONE"})

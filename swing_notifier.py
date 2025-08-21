@@ -79,11 +79,31 @@ def run():
 
         tstate = state.get(code, {"status": "NONE"})
 
-        # 取引中（HOLD）の場合は通知なし → OCOはエントリー時点でセット済み
+        # 取引中 → 利確/損切の監視
         if tstate["status"] == "HOLD":
-            pass  
+            entry_price = tstate["entry_price"]
+            stop_loss = entry_price * 0.97
+            take_profit = entry_price * 1.06
 
-        # 未保有 → エントリーシグナル判定（移動平均クロス）
+            if price <= stop_loss:
+                send_line(
+                    f"❌【{name}({code})】損切りライン到達\n"
+                    f"現在値: {price:.0f}円\n"
+                    f"エントリー価格: {entry_price:.0f}円\n"
+                    f"OCO注文で決済済みのはずです"
+                )
+                tstate = {"status": "NONE"}
+
+            elif price >= take_profit:
+                send_line(
+                    f"✅【{name}({code})】利確ライン到達\n"
+                    f"現在値: {price:.0f}円\n"
+                    f"エントリー価格: {entry_price:.0f}円\n"
+                    f"OCO注文で決済済みのはずです"
+                )
+                tstate = {"status": "NONE"}
+
+        # 未保有 → エントリーシグナル判定
         else:
             df["SMA5"] = df["Close"].rolling(5).mean()
             df["SMA20"] = df["Close"].rolling(20).mean()

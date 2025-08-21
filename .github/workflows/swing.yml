@@ -1,0 +1,84 @@
+name: swing-notifier
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # 30分ごと（UTC）。JST(+9)でも常に30分おきに動く
+  workflow_dispatch: {}       # 手動実行ボタンも出す
+
+permissions:
+  contents: write             # ステート用ブランチにpushするのでwriteが必要
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # ブランチ操作するのでフル履歴
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # --- ステートの復元（stateブランチから trade_state.json を取り出す） ---
+      - name: Restore state file if exists
+        shell: bash
+        run: |
+          set -e
+          if git ls-remote --exit-code origin state >/dev/null 2>&1; then
+            echo "state branch exists. Restoring trade_state.json ..."
+            git fetch origin state
+            # stateブランチに trade_state.json があるなら取り出す。無ければ空JSONを作る
+            if git show origin/state:trade_state.json >/dev/null 2>&1; then
+              git show origin/state:trade_state.json > trade_state.json
+            else
+              echo "{}" > trade_state.json
+            fi
+          else
+            echo "state branch not found. Create empty state."
+            echo "{}" > trade_state.json
+          fi
+
+      - name: Run notifier
+        env:
+          CHANNEL_ACCESS_TOKEN: ${{ secrets.CHANNEL_ACCESS_TOKEN }}
+        run: python swing_notifier.py
+
+      # --- ステートの保存（trade_state.json を stateブランチにcommit/push） ---
+      - name: Save state back to branch
+        shell: bash
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # stateブランチを作業ツリーとして追加
+          if git ls-remote --exit-code origin state >/dev/null 2>&1; then
+            git worktree add ../state-worktree origin/state
+          else
+            # stateブランチが無い場合はmainから作る（中身はstate専用にしてOK）
+            git worktree add -b state ../state-worktree HEAD
+            pushd ../state-worktree
+            rm -rf ./*
+            git commit --allow-empty -m "init state branch"
+            git push -u origin state
+            popd
+          fi
+
+          # trade_state.json を stateワークツリーへコピーして差分があればcommit/push
+          cp trade_state.json ../state-worktree/trade_state.json
+          pushd ../state-worktree
+          if git diff --quiet -- trade_state.json; then
+            echo "No state changes."
+          else
+            git add trade_state.json
+            git commit -m "update state: $(date -u +%FT%TZ)"
+            git push origin state
+          fi
+          popd

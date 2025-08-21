@@ -50,6 +50,7 @@ jobs:
             fi
           else
             echo "{}" > trade_state.json
+          fi
 
       - name: Run notifier
         env:

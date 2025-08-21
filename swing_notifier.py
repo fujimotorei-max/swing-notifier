@@ -79,19 +79,9 @@ def run():
 
         tstate = state.get(code, {"status": "NONE"})
 
-        # 取引中
+        # 取引中（HOLD）の場合は通知なし → OCOはエントリー時点でセット済み
         if tstate["status"] == "HOLD":
-            entry_price = tstate["entry_price"]
-            stop_loss = entry_price * 0.97
-            take_profit = entry_price * 1.06
-
-            if price <= stop_loss:
-                send_line(f"❌【{name}({code})】損切りしてください（-3%）\n現在値 {price:.0f}円")
-                tstate = {"status": "NONE"}
-
-            elif price >= take_profit:
-                send_line(f"✅【{name}({code})】利確してください（+6%）\n現在値 {price:.0f}円")
-                tstate = {"status": "NONE"}
+            pass  
 
         # 未保有 → エントリーシグナル判定（移動平均クロス）
         else:
@@ -110,7 +100,15 @@ def run():
 
                 # クロス検出
                 if prev_sma5 <= prev_sma20 and curr_sma5 > curr_sma20:
-                    send_line(f"⚡️【{name}({code})】エントリーしてください（価格 {price:.0f}円）")
+                    stop_loss = price * 0.97
+                    take_profit = price * 1.06
+                    send_line(
+                        f"⚡️【{name}({code})】エントリーシグナル\n"
+                        f"現在値: {price:.0f}円\n"
+                        f"📉 損切りライン: {stop_loss:.0f}円\n"
+                        f"📈 利確ライン: {take_profit:.0f}円\n"
+                        f"👉 OCO注文をセットしてください"
+                    )
                     tstate = {"status": "HOLD", "entry_price": float(price)}
 
         state[code] = tstate

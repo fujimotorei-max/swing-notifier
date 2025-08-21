@@ -92,7 +92,7 @@ def run():
                 send_line(f"✅【{name}({code})】利確してください（+6%）\n現在値 {price:.0f}円")
                 tstate = {"status": "NONE"}
 
-        # 未保有 → エントリーシグナル判定（シンプルに移動平均クロス）
+        # 未保有 → エントリーシグナル判定（移動平均クロス）
         else:
             df["SMA5"] = df["Close"].rolling(5).mean()
             df["SMA20"] = df["Close"].rolling(20).mean()
@@ -101,8 +101,14 @@ def run():
             if len(df) >= 2:
                 prev = df.iloc[-2]
                 curr = df.iloc[-1]
+
+                prev_sma5 = float(prev["SMA5"])
+                prev_sma20 = float(prev["SMA20"])
+                curr_sma5 = float(curr["SMA5"])
+                curr_sma20 = float(curr["SMA20"])
+
                 # クロス検出
-                if prev["SMA5"] <= prev["SMA20"] and curr["SMA5"] > curr["SMA20"]:
+                if prev_sma5 <= prev_sma20 and curr_sma5 > curr_sma20:
                     send_line(f"⚡️【{name}({code})】エントリーしてください（価格 {price:.0f}円）")
                     tstate = {"status": "HOLD", "entry_price": float(price)}
 

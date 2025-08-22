@@ -6,14 +6,12 @@ concurrency:
 
 on:
   schedule:
-    # 午前（JST 09:00–11:30）= UTC 00:00–02:30
-    - cron: "0,30 0-2 * * 1-5"
-    # 午後開始の12:30（JST）= UTC 03:30
-    - cron: "30 3 * * 1-5"
-    # 午後（JST 13:00–14:30）= UTC 04:00–05:30
-    - cron: "0,30 4-5 * * 1-5"
-    # 引け（JST 15:00）= UTC 06:00
-    - cron: "0 6 * * 1-5"
+    # === 場中監視（JST 09:00–15:00 → UTC 00:00–06:00 の30分間隔）===
+    - cron: "0,30 0-6 * * 1-5"
+
+    # === 日足シグナル（大引け後JST15:10 → UTC06:10）===
+    - cron: "10 6 * * 1-5"
+
   workflow_dispatch: {}   # 手動実行ボタン
 
 permissions:
@@ -21,7 +19,7 @@ permissions:
 
 defaults:
   run:
-    shell: bash           # すべてbashで実行（構文エラーを避ける）
+    shell: bash
 
 jobs:
   run:
@@ -37,7 +35,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      # （任意）pipキャッシュ。不要ならこのブロックは削除OK
       - name: Cache pip
         uses: actions/cache@v4
         with:
@@ -66,7 +63,6 @@ jobs:
             printf "{}" > trade_state.json
           fi
 
-      # 手動Runの時だけLINEにテスト通知（定期Runでは実行されません）
       - name: LINE ping (manual runs only)
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:

@@ -3,6 +3,8 @@ import pandas as pd
 import json
 import os
 import requests
+import datetime
+import pytz
 
 STATE_FILE = "trade_state.json"
 CHANNEL_ACCESS_TOKEN = os.environ.get("CHANNEL_ACCESS_TOKEN")
@@ -60,56 +62,31 @@ watchlist = {
     "9613.T": "NTTデータ"
 }
 
-
 # メイン処理
 def run():
     state = load_state()
 
-    for code, name in watchlist.items():
-        print(f"=== {code} {name} ===")
+    jst = pytz.timezone("Asia/Tokyo")
+    now = datetime.datetime.now(jst)
 
-        df = yf.download(code, period="5d", interval="30m")
-        if df.empty:
-            print("データなし")
-            continue
+    # =====================
+    # 日足シグナル判定（大引け後）
+    # =====================
+    if now.weekday() < 5 and now.hour >= 15:
+        for code, name in watchlist.items():
+            print(f"[日足チェック] {code} {name}")
+            df = yf.download(code, period="3mo", interval="1d")
+            if df.empty: 
+                continue
 
-        # ✅ floatに変換して常にスカラー値にする
-        price = float(df["Close"].iloc[-1])
-        print("現在値:", price)
+            price = float(df["Close"].iloc[-1])
+            tstate = state.get(code, {"status": "NONE"})
 
-        tstate = state.get(code, {"status": "NONE"})
+            if tstate["status"] == "NONE":
+                df["SMA5"] = df["Close"].rolling(5).mean()
+                df["SMA20"] = df["Close"].rolling(20).mean()
+                df = df.dropna()
 
-        # 取引中 → 利確/損切の監視
-        if tstate["status"] == "HOLD":
-            entry_price = tstate["entry_price"]
-            stop_loss = entry_price * 0.97
-            take_profit = entry_price * 1.06
-
-            if price <= stop_loss:
-                send_line(
-                    f"❌【{name}({code})】損切りライン到達\n"
-                    f"現在値: {price:.0f}円\n"
-                    f"エントリー価格: {entry_price:.0f}円\n"
-                    f"OCO注文で決済済みのはずです"
-                )
-                tstate = {"status": "NONE"}
-
-            elif price >= take_profit:
-                send_line(
-                    f"✅【{name}({code})】利確ライン到達\n"
-                    f"現在値: {price:.0f}円\n"
-                    f"エントリー価格: {entry_price:.0f}円\n"
-                    f"OCO注文で決済済みのはずです"
-                )
-                tstate = {"status": "NONE"}
-
-        # 未保有 → エントリーシグナル判定
-        else:
-            df["SMA5"] = df["Close"].rolling(5).mean()
-            df["SMA20"] = df["Close"].rolling(20).mean()
-            df = df.dropna()
-
-            if len(df) >= 2:
                 prev = df.iloc[-2]
                 curr = df.iloc[-1]
 
@@ -118,23 +95,59 @@ def run():
                 curr_sma5 = float(curr["SMA5"])
                 curr_sma20 = float(curr["SMA20"])
 
-                # クロス検出
                 if prev_sma5 <= prev_sma20 and curr_sma5 > curr_sma20:
                     stop_loss = price * 0.97
                     take_profit = price * 1.06
                     send_line(
-                        f"⚡️【{name}({code})】エントリーシグナル\n"
+                        f"⚡️【{name}({code})】日足エントリーシグナル\n"
                         f"現在値: {price:.0f}円\n"
-                        f"📉 損切りライン: {stop_loss:.0f}円\n"
                         f"📈 利確ライン: {take_profit:.0f}円\n"
+                        f"📉 損切りライン: {stop_loss:.0f}円\n"
                         f"👉 OCO注文をセットしてください"
                     )
                     tstate = {"status": "HOLD", "entry_price": float(price)}
 
-        state[code] = tstate
+            state[code] = tstate
+
+    # =====================
+    # 場中の利確/損切監視（30分足）
+    # =====================
+    if now.weekday() < 5 and 9 <= now.hour < 15:
+        for code, name in watchlist.items():
+            tstate = state.get(code, {"status": "NONE"})
+            if tstate["status"] == "HOLD":
+                print(f"[30分足監視] {code} {name}")
+                df = yf.download(code, period="5d", interval="30m")
+                if df.empty: 
+                    continue
+
+                price = float(df["Close"].iloc[-1])
+                entry_price = tstate["entry_price"]
+                stop_loss = entry_price * 0.97
+                take_profit = entry_price * 1.06
+
+                if price <= stop_loss:
+                    send_line(
+                        f"❌【{name}({code})】損切りライン到達\n"
+                        f"現在値: {price:.0f}円\n"
+                        f"エントリー価格: {entry_price:.0f}円\n"
+                        f"OCO注文で決済済みのはずです"
+                    )
+                    tstate = {"status": "NONE"}
+
+                elif price >= take_profit:
+                    send_line(
+                        f"✅【{name}({code})】利確ライン到達\n"
+                        f"現在値: {price:.0f}円\n"
+                        f"エントリー価格: {entry_price:.0f}円\n"
+                        f"OCO注文で決済済みのはずです"
+                    )
+                    tstate = {"status": "NONE"}
+
+            state[code] = tstate
 
     save_state(state)
 
-
 if __name__ == "__main__":
     run()
+

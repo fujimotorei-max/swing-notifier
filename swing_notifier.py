@@ -86,11 +86,17 @@ def run():
     # =====================
     reset_cmd = load_reset()
     if reset_cmd:
+        reset_list = []
         for code in list(reset_cmd.keys()):
             if code in state:
                 state[code] = {"status": "NONE"}
+                reset_list.append(code)
                 print(f"[RESET] {code} を強制解除しました")
-        send_line("🔄 手動リセットが実行されました")
+        if reset_list:
+            send_line("🔄 手動リセット: " + ", ".join(reset_list))
+        else:
+            print("[RESET] 該当銘柄なし")
+        
         clear_reset()
 
     jst = pytz.timezone("Asia/Tokyo")

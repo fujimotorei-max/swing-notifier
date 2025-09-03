@@ -101,8 +101,8 @@ def run():
                     send_line(
                         f"⚡️【{name}({code})】日足エントリーシグナル\n"
                         f"現在値: {price:.0f}円\n"
-                        f"📈 利確ライン: {take_profit:.0f}円\n"
                         f"📉 損切りライン: {stop_loss:.0f}円\n"
+                        f"📈 利確ライン: {take_profit:.0f}円\n"
                         f"👉 OCO注文をセットしてください"
                     )
                     tstate = {"status": "HOLD", "entry_price": float(price)}
@@ -110,7 +110,7 @@ def run():
             state[code] = tstate
 
     # =====================
-    # 場中の利確/損切監視（30分足）
+    # 場中の利確/損切監視（30分足、高値/安値ベース）
     # =====================
     if now.weekday() < 5 and 9 <= now.hour < 15:
         for code, name in watchlist.items():
@@ -121,24 +121,27 @@ def run():
                 if df.empty: 
                     continue
 
-                price = float(df["Close"].iloc[-1])
+                high = float(df["High"].iloc[-1])
+                low = float(df["Low"].iloc[-1])
+                close = float(df["Close"].iloc[-1])  # 表示用
+
                 entry_price = tstate["entry_price"]
                 stop_loss = entry_price * 0.97
                 take_profit = entry_price * 1.06
 
-                if price <= stop_loss:
+                if low <= stop_loss:
                     send_line(
                         f"❌【{name}({code})】損切りライン到達\n"
-                        f"現在値: {price:.0f}円\n"
+                        f"現在値: {close:.0f}円\n"
                         f"エントリー価格: {entry_price:.0f}円\n"
                         f"OCO注文で決済済みのはずです"
                     )
                     tstate = {"status": "NONE"}
 
-                elif price >= take_profit:
+                elif high >= take_profit:
                     send_line(
                         f"✅【{name}({code})】利確ライン到達\n"
-                        f"現在値: {price:.0f}円\n"
+                        f"現在値: {close:.0f}円\n"
                         f"エントリー価格: {entry_price:.0f}円\n"
                         f"OCO注文で決済済みのはずです"
                     )
@@ -150,4 +153,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-

@@ -37,8 +37,11 @@ def load_reset():
     if os.path.exists(RESET_FILE):
         with open(RESET_FILE, "r") as f:
             try:
-                return json.load(f)
-            except:
+                data = json.load(f)
+                print("[DEBUG] manual_reset.json の内容:", data)
+                return data
+            except Exception as e:
+                print("[ERROR] manual_reset.json の読み込み失敗:", e)
                 return {}
     return {}
 

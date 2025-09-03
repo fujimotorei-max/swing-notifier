@@ -7,6 +7,7 @@ import datetime
 import pytz
 
 STATE_FILE = "trade_state.json"
+RESET_FILE = "manual_reset.json"
 CHANNEL_ACCESS_TOKEN = os.environ.get("CHANNEL_ACCESS_TOKEN")
 
 # LINE通知
@@ -30,6 +31,20 @@ def load_state():
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+
+# リセットファイルのロード・クリア
+def load_reset():
+    if os.path.exists(RESET_FILE):
+        with open(RESET_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except:
+                return {}
+    return {}
+
+def clear_reset():
+    with open(RESET_FILE, "w") as f:
+        json.dump({}, f)
 
 # 銘柄リスト
 watchlist = {
@@ -66,6 +81,18 @@ watchlist = {
 def run():
     state = load_state()
 
+    # =====================
+    # 手動リセット処理
+    # =====================
+    reset_cmd = load_reset()
+    if reset_cmd:
+        for code in list(reset_cmd.keys()):
+            if code in state:
+                state[code] = {"status": "NONE"}
+                print(f"[RESET] {code} を強制解除しました")
+        send_line("🔄 手動リセットが実行されました")
+        clear_reset()
+
     jst = pytz.timezone("Asia/Tokyo")
     now = datetime.datetime.now(jst)
 
@@ -76,7 +103,7 @@ def run():
         for code, name in watchlist.items():
             print(f"[日足チェック] {code} {name}")
             df = yf.download(code, period="3mo", interval="1d")
-            if df.empty: 
+            if df.empty:
                 continue
 
             price = float(df["Close"].iloc[-1])
@@ -118,7 +145,7 @@ def run():
             if tstate["status"] == "HOLD":
                 print(f"[30分足監視] {code} {name}")
                 df = yf.download(code, period="5d", interval="30m")
-                if df.empty: 
+                if df.empty:
                     continue
 
                 high = float(df["High"].iloc[-1])

@@ -6,52 +6,38 @@ concurrency:
 
 on:
   schedule:
-    # === 場中監視（JST 09:00–15:00 → UTC 00:00–06:00 の30分間隔）===
+    # 場中監視（JST 09:00–15:00 → UTC 00:00–06:00）
     - cron: "0,30 0-6 * * 1-5"
-
-    # === 日足シグナル（大引け後JST15:10 → UTC06:10）===
+    # 日足チェック（引け後15:10 JST → UTC 06:10）
     - cron: "10 6 * * 1-5"
-
-  workflow_dispatch: {}   # 手動実行ボタン
+  workflow_dispatch: {}
 
 permissions:
-  contents: write         # stateブランチにpushするため
+  contents: write
 
 defaults:
   run:
     shell: bash
 
 jobs:
-  run:
+  run-intraday:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # stateブランチから trade_state.json を復元
-      - name: Restore state file if exists
+      - name: Restore state file
         run: |
           set -euo pipefail
           if git ls-remote --exit-code origin state >/dev/null 2>&1; then
-            echo "state branch exists. Restoring trade_state.json ..."
             git fetch origin state
             if git cat-file -e origin/state:trade_state.json 2>/dev/null; then
               git show origin/state:trade_state.json > trade_state.json
@@ -59,33 +45,78 @@ jobs:
               printf "{}" > trade_state.json
             fi
           else
-            echo "state branch not found. Create empty state."
             printf "{}" > trade_state.json
           fi
 
-      - name: LINE ping (manual runs only)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
+      - name: Run notifier (intraday)
         env:
           CHANNEL_ACCESS_TOKEN: ${{ secrets.CHANNEL_ACCESS_TOKEN }}
-        run: |
-          python - <<'PY'
-          import os, requests
-          token = os.environ["CHANNEL_ACCESS_TOKEN"]
-          resp = requests.post(
-              "https://api.line.me/v2/bot/message/broadcast",
-              headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-              json={"messages":[{"type":"text","text":"🔔 GitHub Actions からの手動テスト通知"}]}
-          )
-          print("LINE status:", resp.status_code, resp.text[:200])
-          PY
-
-      - name: Run notifier
-        env:
-          CHANNEL_ACCESS_TOKEN: ${{ secrets.CHANNEL_ACCESS_TOKEN }}
+          RUN_MODE: "intraday"
         run: python swing_notifier.py
 
-      # trade_state.json を state ブランチに保存
-      - name: Save state back to branch
+      - name: Save state back
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code origin state >/dev/null 2>&1; then
+            git worktree add ../state-worktree origin/state
+          else
+            git worktree add -b state ../state-worktree HEAD
+            pushd ../state-worktree
+            rm -rf ./*
+            git commit --allow-empty -m "init state branch"
+            git push -u origin state
+            popd
+          fi
+
+          cp -f trade_state.json ../state-worktree/trade_state.json
+          pushd ../state-worktree
+          if git diff --quiet -- trade_state.json; then
+            echo "No state changes."
+          else
+            git add trade_state.json
+            git commit -m "update state"
+            git push origin state
+          fi
+          popd
+
+  run-daily:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore state file
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code origin state >/dev/null 2>&1; then
+            git fetch origin state
+            if git cat-file -e origin/state:trade_state.json 2>/dev/null; then
+              git show origin/state:trade_state.json > trade_state.json
+            else
+              printf "{}" > trade_state.json
+            fi
+          else
+            printf "{}" > trade_state.json
+          fi
+
+      - name: Run notifier (daily)
+        env:
+          CHANNEL_ACCESS_TOKEN: ${{ secrets.CHANNEL_ACCESS_TOKEN }}
+          RUN_MODE: "daily"
+        run: python swing_notifier.py
+
+      - name: Save state back
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"

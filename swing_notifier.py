@@ -121,8 +121,19 @@ def run(mode="intraday"):
                     continue
 
                 daily = raw.copy()
+                # yfinanceがたまにMultiIndex列になるのを潰す（保険）
+                if isinstance(daily.columns, pd.MultiIndex):
+                    daily.columns = daily.columns.get_level_values(0)
+
+                # 念のためCloseをSeriesとして確保
+                close = daily["Close"]
+                if isinstance(close, pd.DataFrame):
+                    close = close.iloc[:, 0]
+
                 for w in (5, 25, 75):
-                    daily[f"SMA{w}"] = daily["Close"].rolling(w).mean()
+                    daily[f"SMA{w}"] = close.rolling(w).mean()
+
+                daily["Close"] = close
                 daily = daily.dropna()
 
                 if len(daily) < 2:
@@ -130,15 +141,25 @@ def run(mode="intraday"):
                     state[code] = tstate
                     continue
 
+                # === 必ず float に落とす ===
                 price = float(daily["Close"].iloc[-1])
-                prev  = daily.iloc[-2]
-                curr  = daily.iloc[-1]
 
-                # ゴールデンクロス＆整列の判定
-                gcross = (prev["SMA5"] <= prev["SMA25"]) and (curr["SMA5"] > curr["SMA25"])
-                prev_align = (prev["SMA5"] > prev["SMA25"] > prev["SMA75"])
-                curr_align = (curr["SMA5"] > curr["SMA25"] > curr["SMA75"])
-                align_new  = (not prev_align) and curr_align
+                prev_sma5  = float(daily["SMA5"].iloc[-2])
+                prev_sma25 = float(daily["SMA25"].iloc[-2])
+                prev_sma75 = float(daily["SMA75"].iloc[-2])
+
+                curr_sma5  = float(daily["SMA5"].iloc[-1])
+                curr_sma25 = float(daily["SMA25"].iloc[-1])
+                curr_sma75 = float(daily["SMA75"].iloc[-1])
+
+                # ゴールデンクロス＆整列の判定（andで安全に）
+                gcross = (prev_sma5 <= prev_sma25) and (curr_sma5 > curr_sma25)
+
+                prev_align = (prev_sma5 > prev_sma25) and (prev_sma25 > prev_sma75)
+                curr_align = (curr_sma5 > curr_sma25) and (curr_sma25 > curr_sma75)
+
+                align_new = (not prev_align) and curr_align
+
 
                 if tstate.get("status") == "NONE" and (gcross or align_new):
                     sl = price * 0.97

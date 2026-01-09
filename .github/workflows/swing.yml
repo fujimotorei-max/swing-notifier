@@ -17,6 +17,7 @@ permissions:
 
 jobs:
   run-intraday:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '0,30 0-6 * * 1-5' }}
     runs-on: ubuntu-latest
     env:
       RUN_MODE: intraday
@@ -97,6 +98,7 @@ jobs:
           popd
 
   run-daily:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.schedule == '10 6 * * 1-5' }}
     runs-on: ubuntu-latest
     env:
       RUN_MODE: daily

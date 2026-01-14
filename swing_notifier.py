@@ -13,12 +13,15 @@ CHANNEL_ACCESS_TOKEN = os.environ.get("CHANNEL_ACCESS_TOKEN", "")
 JST = pytz.timezone("Asia/Tokyo")
 
 # パフォーマンス調整
-WATCH_LIMIT = int(os.environ.get("WATCH_LIMIT", "150"))   # 1回の実行で見る最大銘柄数
+WATCH_LIMIT = int(os.environ.get("WATCH_LIMIT", "150"))      # 1回の実行で見る最大銘柄数
 TIME_SLEEP_MS = int(os.environ.get("TIME_SLEEP_MS", "120"))  # yfinance連打抑制
+
+# 利確/損切（エントリー価格に対する倍率）
+TP_MULT = float(os.environ.get("TP_MULT", "1.06"))  # +6%
+SL_MULT = float(os.environ.get("SL_MULT", "0.97"))  # -3%
 
 # ===== LINE =====
 def send_line(message: str):
-    """LINEブロードキャスト（トークン未設定ならスキップ）"""
     if not CHANNEL_ACCESS_TOKEN:
         print("[WARN] CHANNEL_ACCESS_TOKEN 未設定のため LINE送信をスキップ")
         return
@@ -37,7 +40,7 @@ def send_line(message: str):
 # ===== state I/O =====
 def load_state():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
             try:
                 return json.load(f)
             except Exception:
@@ -45,13 +48,13 @@ def load_state():
     return {}
 
 def save_state(state):
-    with open(STATE_FILE, "w") as f:
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 # ===== manual reset =====
 def load_reset():
     if os.path.exists(RESET_FILE):
-        with open(RESET_FILE, "r") as f:
+        with open(RESET_FILE, "r", encoding="utf-8") as f:
             try:
                 return json.load(f)
             except Exception:
@@ -59,52 +62,42 @@ def load_reset():
     return {}
 
 def clear_reset():
-    with open(RESET_FILE, "w") as f:
-        json.dump({}, f)
+    with open(RESET_FILE, "w", encoding="utf-8") as f:
+        json.dump({}, f, ensure_ascii=False)
 
-# ===== 30分足→日足合成（必要なら使う） =====
-def build_daily_from_30m(df_30m: pd.DataFrame) -> pd.DataFrame:
-    if df_30m.empty:
-        return df_30m
-    if df_30m.index.tz is None:
-        df_30m = df_30m.tz_localize("UTC")
-    df_30m = df_30m.tz_convert(JST)
-    df_30m = df_30m.between_time("09:00", "15:00")
-
-    daily = pd.DataFrame({
-        "Open":  df_30m["Open"].resample("1D").first(),
-        "High":  df_30m["High"].resample("1D").max(),
-        "Low":   df_30m["Low"].resample("1D").min(),
-        "Close": df_30m["Close"].resample("1D").last(),
-    }).dropna()
-
-    daily["SMA5"]  = daily["Close"].rolling(5).mean()
-    daily["SMA25"] = daily["Close"].rolling(25).mean()
-    daily["SMA75"] = daily["Close"].rolling(75).mean()
-    return daily.dropna()
+def apply_manual_reset(state: dict):
+    reset_cmd = load_reset()
+    if not reset_cmd:
+        return state
+    done = []
+    for code in list(reset_cmd.keys()):
+        state[code] = {"status": "NONE"}
+        done.append(code)
+    if done:
+        send_line("🔄 手動リセット: " + ", ".join(done))
+    clear_reset()
+    return state
 
 # ===== ウォッチ銘柄 =====
-# ★ ここは今の巨大 watchlist をそのまま貼り付けてください
-from watchlist_module import watchlist  # ←例：外出ししてもOK。直接変数でもOK。
+from watchlist_module import watchlist  # 既存の巨大watchlistを使用
 
 # ===== メイン =====
-def run(mode="intraday"):
-    assert mode in ("daily", "intraday"), "mode must be 'daily' or 'intraday'"
+def run(mode="daily"):
+    """
+    daily: 日足でのみ監視。GC(5>25上抜け) かつ 5>25>75整列 完成日に1回通知。
+           利確/損切ラインは同時に提示。到達通知はしない。
+    intraday: 何もしない（no-op）
+    """
+    assert mode in ("daily", "intraday")
+
     state = load_state()
+    state = apply_manual_reset(state)
 
-    # 手動リセット（intraday のときだけ）
     if mode == "intraday":
-        reset_cmd = load_reset()
-        if reset_cmd:
-            done = []
-            for code in list(reset_cmd.keys()):
-                state[code] = {"status": "NONE"}
-                done.append(code)
-            if done:
-                send_line("🔄 手動リセット: " + ", ".join(done))
-            clear_reset()
+        print("intraday mode: no-op")
+        save_state(state)
+        return
 
-    # ウォッチ数の制限（レート対策）
     items = list(watchlist.items())[:WATCH_LIMIT]
 
     for idx, (code, name) in enumerate(items, 1):
@@ -112,121 +105,55 @@ def run(mode="intraday"):
         tstate = state.get(code, {"status": "NONE"})
 
         try:
-            if mode == "daily":
-                # 1dを長めに取得
-                raw = yf.download(code, period="400d", interval="1d", progress=False)
-                if raw is None or raw.empty:
-                    print("データなし")
-                    state[code] = tstate
-                    continue
-
-                daily = raw.copy()
-                # yfinanceがたまにMultiIndex列になるのを潰す（保険）
-                if isinstance(daily.columns, pd.MultiIndex):
-                    daily.columns = daily.columns.get_level_values(0)
-
-                # 念のためCloseをSeriesとして確保
-                close = daily["Close"]
-                if isinstance(close, pd.DataFrame):
-                    close = close.iloc[:, 0]
-
-                for w in (5, 25, 75):
-                    daily[f"SMA{w}"] = close.rolling(w).mean()
-
-                daily["Close"] = close
-                daily = daily.dropna()
-
-                if len(daily) < 2:
-                    print("日足不足")
-                    state[code] = tstate
-                    continue
-
-                # === 必ず float に落とす ===
-                price = float(daily["Close"].iloc[-1])
-
-                prev_sma5  = float(daily["SMA5"].iloc[-2])
-                prev_sma25 = float(daily["SMA25"].iloc[-2])
-                prev_sma75 = float(daily["SMA75"].iloc[-2])
-
-                curr_sma5  = float(daily["SMA5"].iloc[-1])
-                curr_sma25 = float(daily["SMA25"].iloc[-1])
-                curr_sma75 = float(daily["SMA75"].iloc[-1])
-
-                # ゴールデンクロス＆整列の判定（andで安全に）
-                gcross = (prev_sma5 <= prev_sma25) and (curr_sma5 > curr_sma25)
-
-                prev_align = (prev_sma5 > prev_sma25) and (prev_sma25 > prev_sma75)
-                curr_align = (curr_sma5 > curr_sma25) and (curr_sma25 > curr_sma75)
-
-                align_new = (not prev_align) and curr_align
-
-
-                if tstate.get("status") == "NONE" and (gcross or align_new):
-                    sl = price * 0.97
-                    tp = price * 1.06
-                    reason = "ゴールデンクロス" if gcross else "短期>中期>長期の整列"
-                    send_line(
-                        f"⚡️【{name}({code})】日足エントリーシグナル（{reason}）\n"
-                        f"終値: {price:.0f}円\n"
-                        f"📈 利確ライン: {tp:.0f}円\n"
-                        f"📉 損切りライン: {sl:.0f}円\n"
-                        f"👉 OCO注文をセットしてください"
-                    )
-                    tstate = {"status": "HOLD", "entry_price": float(price)}
-
+            raw = yf.download(code, period="400d", interval="1d", progress=False)
+            if raw is None or raw.empty:
+                print("データなし")
                 state[code] = tstate
+                continue
 
-            else:  # intraday
-                # 場中は利確/損切りの到達監視のみ
-                if tstate.get("status") == "HOLD":
-                    df = yf.download(code, period="5d", interval="30m", progress=False)
-                    if df is None or df.empty:
-                        print("データなし")
-                        state[code] = tstate
-                        continue
+            daily = raw.copy()
+            for w in (5, 25, 75):
+                daily[f"SMA{w}"] = daily["Close"].rolling(w).mean()
+            daily = daily.dropna()
 
-                    entry = float(tstate["entry_price"])
-                    sl = entry * 0.97
-                    tp = entry * 1.06
+            if len(daily) < 2:
+                print("日足不足")
+                state[code] = tstate
+                continue
 
-                    # 直近バーで判定（必要なら当日分に絞るなど拡張可）
-                    high = float(df["High"].iloc[-1])
-                    low  = float(df["Low"].iloc[-1])
-                    close = float(df["Close"].iloc[-1])
+            prev = daily.iloc[-2]
+            curr = daily.iloc[-1]
+            price = float(curr["Close"])
 
-                    if low <= sl:
-                        send_line(
-                            f"❌【{name}({code})】損切りライン到達\n"
-                            f"現在値: {close:.0f}円 / 取得: {entry:.0f}円\n"
-                            f"OCOで決済済みのはずです"
-                        )
-                        tstate = {"status": "NONE"}
-                    elif high >= tp:
-                        send_line(
-                            f"✅【{name}({code})】利確ライン到達\n"
-                            f"現在値: {close:.0f}円 / 取得: {entry:.0f}円\n"
-                            f"OCOで決済済みのはずです"
-                        )
-                        tstate = {"status": "NONE"}
+            # 条件：GC かつ 整列
+            gcross = (prev["SMA5"] <= prev["SMA25"]) and (curr["SMA5"] > curr["SMA25"])
+            aligned = (curr["SMA5"] > curr["SMA25"] > curr["SMA75"])
+            entry_signal = gcross and aligned
 
-                    state[code] = tstate
-                else:
-                    # HOLDでないなら何もしない
-                    state[code] = tstate
+            # 既にHOLDなら重複通知しない
+            if tstate.get("status") == "NONE" and entry_signal:
+                tp = price * TP_MULT
+                sl = price * SL_MULT
+                send_line(
+                    f"⚡️【{name}({code})】日足エントリー（GC＋整列）\n"
+                    f"終値: {price:.0f}円\n"
+                    f"📈 利確ライン: {tp:.0f}円（×{TP_MULT}）\n"
+                    f"📉 損切りライン: {sl:.0f}円（×{SL_MULT}）\n"
+                    f"👉 OCO注文をセットしてください"
+                )
+                tstate = {"status": "HOLD", "entry_price": float(price)}
+
+            state[code] = tstate
 
         except Exception as e:
             print(f"[ERROR] {code} 処理中に例外:", e)
-            # 例外時も状態は維持
             state[code] = tstate
 
-        # 都度保存（途中で止まっても被害最小化）
         save_state(state)
-        # 軽くスリープしてレート緩和
         if TIME_SLEEP_MS > 0:
             time.sleep(TIME_SLEEP_MS / 1000.0)
 
-    # 念のため最後にも保存
     save_state(state)
 
 if __name__ == "__main__":
-    run(mode=os.environ.get("RUN_MODE", "intraday"))
+    run(mode=os.environ.get("RUN_MODE", "daily"))
